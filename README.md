@@ -54,12 +54,14 @@ Each line includes a string field **`benchmark`** (e.g. `swebench`, `mtrag`) for
 
 The question bank **does not** include fields such as `optimal_model` or `baseline_model`. Supervision is **only** by capability tier, using **English** labels and a **numeric** id.
 
-| `target_tier` (string) | `target_tier_id` (int) | Guide CN label |
-|------------------------|-------------------------|----------------|
-| `low`                  | 0                       | 低             |
-| `mid`                  | 1                       | 中             |
-| `mid_high`             | 2                       | 中高           |
-| `high`                 | 3                       | 高             |
+| `target_tier` (string) | `target_tier_id` (int) | Tier (plain English) |
+|------------------------|-------------------------|----------------------|
+| `low`                  | 0                       | Low                  |
+| `mid`                  | 1                       | Medium               |
+| `mid_high`             | 2                       | Medium-high          |
+| `high`                 | 3                       | High                 |
+
+Terminology aligned with the **Chinese** RouterBench v2 guide is summarized in [README.zh.md](README.zh.md).
 
 Each line includes at least: `id`, `benchmark`, `scenario`, `instance_id`, `step_index`, `total_steps`, `messages`, `target_tier`, `target_tier_id`.
 
