@@ -2,6 +2,13 @@
 
 All notable changes to the open-source **CommonRouterBench** Python distribution (import package **`main`**) are documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- Refreshed the public `bfcl` rows in `data/question_bank.jsonl` / `data/manifest.json` from the latest export and expanded the shipped BFCL subset from **single-turn only** to **single-turn + multi-turn**.
+- Updated the README files to reflect the new public corpus size (**974** rows) and the full BFCL inclusion.
+
 ## [0.1.0] - 2026-04-09
 
 ### Added

@@ -67,19 +67,21 @@ pip install CommonRouterBench
 
 ## 数据分布
 
-下列统计与当前仓库中的 `**data/question_bank.jsonl`**、`**data/manifest.json**` 一致（共 **859** 条路由监督步骤）。若从私有流水线重新构建题库，数字可能变化。
+下列统计与当前仓库中的 `**data/question_bank.jsonl`**、`**data/manifest.json**` 一致（共 **974** 条路由监督步骤）。若从私有流水线重新构建题库，数字可能变化。
+
+对 **BFCL** 而言，公开题库现在同时包含 **single-turn** 与 **multi-turn** 路由监督数据。
 
 ### 按 `benchmark` 行数
 
 
 | `benchmark`  | 行数      | 占全库比例    |
 | ------------ | ------- | -------- |
-| `swebench`   | 336     | 39.1%    |
-| `mtrag`      | 193     | 22.5%    |
-| `qmsum`      | 145     | 16.9%    |
-| `bfcl`       | 97      | 11.3%    |
-| `pinchbench` | 88      | 10.2%    |
-| **合计**       | **859** | **100%** |
+| `swebench`   | 336     | 34.5%    |
+| `bfcl`       | 212     | 21.8%    |
+| `mtrag`      | 193     | 19.8%    |
+| `qmsum`      | 145     | 14.9%    |
+| `pinchbench` | 88      | 9.0%     |
+| **合计**       | **974** | **100%** |
 
 
 ### 金标 `target_tier`（全库）
@@ -87,11 +89,11 @@ pip install CommonRouterBench
 
 | `target_tier` | `target_tier_id` | 行数      | 占比       |
 | ------------- | ---------------- | ------- | -------- |
-| `low`         | 0                | 516     | 60.1%    |
-| `mid`         | 1                | 67      | 7.8%     |
-| `mid_high`    | 2                | 56      | 6.5%     |
-| `high`        | 3                | 220     | 25.6%    |
-| **合计**        | —                | **859** | **100%** |
+| `low`         | 0                | 592     | 60.8%    |
+| `mid`         | 1                | 68      | 7.0%     |
+| `mid_high`    | 2                | 56      | 5.7%     |
+| `high`        | 3                | 258     | 26.5%    |
+| **合计**        | —                | **974** | **100%** |
 
 
 ### 各 `benchmark` 下金标 `target_tier`（行数）
@@ -99,7 +101,7 @@ pip install CommonRouterBench
 
 | `benchmark`  | 行数  | `low` | `mid` | `mid_high` | `high` |
 | ------------ | --- | ----- | ----- | ---------- | ------ |
-| `bfcl`       | 97  | 93    | 4     | 0          | 0      |
+| `bfcl`       | 212 | 169   | 5     | 0          | 38     |
 | `mtrag`      | 193 | 183   | 8     | 1          | 1      |
 | `pinchbench` | 88  | 65    | 10    | 6          | 7      |
 | `qmsum`      | 145 | 132   | 10    | 3          | 0      |
@@ -125,7 +127,7 @@ pip install CommonRouterBench
 
 ### 抽样
 
-- **全量题库** — `run_question_bank_eval(..., n=None)`：按**文件顺序**遍历每一行（当前公开构建约 859 步）。
+- **全量题库** — `run_question_bank_eval(..., n=None)`：按**文件顺序**遍历每一行（当前公开构建约 974 步）。
 - **固定条数、按来源分层** — API 传 `n=N`：按 `data/manifest.json` 里 `sources.*.line_count` 做 **最大余数法** 配额，再对每个 benchmark 层做 **一遍扫描的蓄水池抽样**（`--seed` 固定随机数）。使五个逻辑 benchmark（`swebench`、`pinchbench`、`mtrag`、`qmsum`、`bfcl`）在全库中的占比与完整语料大致一致。
 
 请在评测 JSON 中报告 `**sample_mode`**、`**benchmark_counts**`、`**by_benchmark**`，以便他人复现你的划分。
