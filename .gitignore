@@ -8,6 +8,9 @@ scripts/
 # Local pytest and HTTP smoke harness (not published in this repository)
 tests/
 
+# Build scripts and private source data (not published)
+test/
+
 # Python bytecode and caches
 __pycache__/
 *.py[cod]
