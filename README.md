@@ -67,7 +67,7 @@ Each line includes at least: `id`, `benchmark`, `scenario`, `instance_id`, `step
 
 ## Data distribution
 
-The following counts match the **`data/question_bank.jsonl`** and **`data/manifest.json`** shipped in this repository (**974** routing-step rows). Rebuilding the bank from private exports may change these figures.
+The following counts match the **`data/question_bank.jsonl`** and **`data/manifest.json`** shipped in this repository (**1010** routing-step rows). Rebuilding the bank from private exports may change these figures.
 
 For **BFCL**, the public corpus now includes both **single-turn** and **multi-turn** routing supervision rows.
 
@@ -75,28 +75,28 @@ For **BFCL**, the public corpus now includes both **single-turn** and **multi-tu
 
 | `benchmark` | Rows | Share of bank |
 |-------------|-----:|--------------:|
-| `swebench` | 336 | 34.5% |
-| `bfcl` | 212 | 21.8% |
-| `mtrag` | 193 | 19.8% |
-| `qmsum` | 145 | 14.9% |
-| `pinchbench` | 88 | 9.0% |
-| **Total** | **974** | **100%** |
+| `swebench` | 336 | 33.3% |
+| `bfcl` | 248 | 24.6% |
+| `mtrag` | 193 | 19.1% |
+| `qmsum` | 145 | 14.4% |
+| `pinchbench` | 88 | 8.7% |
+| **Total** | **1010** | **100%** |
 
 ### Gold `target_tier` (full bank)
 
 | `target_tier` | `target_tier_id` | Rows | Share |
 |---------------|-----------------|-----:|------:|
-| `low` | 0 | 592 | 60.8% |
-| `mid` | 1 | 68 | 7.0% |
-| `mid_high` | 2 | 56 | 5.7% |
-| `high` | 3 | 258 | 26.5% |
-| **Total** | — | **974** | **100%** |
+| `low` | 0 | 662 | 65.5% |
+| `mid` | 1 | 71 | 7.0% |
+| `mid_high` | 2 | 57 | 5.6% |
+| `high` | 3 | 220 | 21.8% |
+| **Total** | — | **1010** | **100%** |
 
 ### Gold `target_tier` by `benchmark` (row counts)
 
 | `benchmark` | Rows | `low` | `mid` | `mid_high` | `high` |
 |-------------|-----:|------:|------:|-----------:|-------:|
-| `bfcl` | 212 | 169 | 5 | 0 | 38 |
+| `bfcl` | 248 | 239 | 8 | 1 | 0 |
 | `mtrag` | 193 | 183 | 8 | 1 | 1 |
 | `pinchbench` | 88 | 65 | 10 | 6 | 7 |
 | `qmsum` | 145 | 132 | 10 | 3 | 0 |
@@ -119,7 +119,7 @@ Each line in `data/question_bank.jsonl` is **one routing supervision step**: a c
 
 ### Sampling
 
-- **Full bank** — `run_question_bank_eval(..., n=None)`: every row, **file order** (~974 steps in the public build).
+- **Full bank** — `run_question_bank_eval(..., n=None)`: every row, **file order** (~1010 steps in the public build).
 - **Fixed size, stratified by source** — pass `--n N` (CLI) or `n=N` (API): **largest-remainder** quotas by `data/manifest.json` `sources.*.line_count`, then **one-pass reservoir sampling** per benchmark stratum (`--seed` fixes RNG). This keeps the five logical benchmarks (`swebench`, `pinchbench`, `mtrag`, `qmsum`, `bfcl`) in roughly the same ratio as the full corpus.
 
 Report **`sample_mode`**, **`benchmark_counts`**, and **`by_benchmark`** from the eval JSON so others can reproduce your split.
