@@ -86,8 +86,8 @@ For **BFCL**, the public corpus now includes both **single-turn** and **multi-tu
 
 | `target_tier` | `target_tier_id` | Rows | Share |
 |---------------|-----------------|-----:|------:|
-| `low` | 0 | 661 | 65.4% |
-| `mid` | 1 | 72 | 7.1% |
+| `low` | 0 | 662 | 65.5% |
+| `mid` | 1 | 71 | 7.0% |
 | `mid_high` | 2 | 57 | 5.6% |
 | `high` | 3 | 220 | 21.8% |
 | **Total** | — | **1010** | **100%** |
@@ -96,7 +96,7 @@ For **BFCL**, the public corpus now includes both **single-turn** and **multi-tu
 
 | `benchmark` | Rows | `low` | `mid` | `mid_high` | `high` |
 |-------------|-----:|------:|------:|-----------:|-------:|
-| `bfcl` | 248 | 238 | 9 | 1 | 0 |
+| `bfcl` | 248 | 239 | 8 | 1 | 0 |
 | `mtrag` | 193 | 183 | 8 | 1 | 1 |
 | `pinchbench` | 88 | 65 | 10 | 6 | 7 |
 | `qmsum` | 145 | 132 | 10 | 3 | 0 |
