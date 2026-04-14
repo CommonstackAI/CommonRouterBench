@@ -1,34 +1,43 @@
 # CommonRouterBench
 
-> **说明**：本文件是 `[README.md](README.md)` 的**中文对照**，方便审阅与提修改意见；**对外/协作以英文 README 为准**。
+**为真正烧 token 的高消耗场景构建的逐步路由监督金标。**
 
-**版本：** `0.1.0`（变更见 [CHANGELOG.md](CHANGELOG.md)）。
+> **说明**：本文件是 `[README.md](README.md)` 的**中文对照**；对外与协作以英文 README 为准。
 
-本目录是仓库中**唯一**计划开源的部分：可安装发行名 `**CommonRouterBench`**（Python 中 `**import main**`）以及公开 **仅档位（tier-only）** 题库 `**data/`**。对外只发布 `**main**`、`**data/**` 与文档；**不包含** pytest / HTTP 冒烟等测试脚本（见 `**.gitignore`**、`**MANIFEST.in**`）。
+CommonRouterBench 为真正需要路由的场景（如长链路 agent、长上下文 RAG、vibecoding 工具循环）提供 **每一步 LLM 调用的能力档位金标**。我们不依赖盲区重重的 LLM-as-judge，而是通过对成功轨迹进行降级搜索，找出能通过严苛任务检查的最低成本能力档。
 
-该 Python 包提供 **路由监督** 样本（LLM 输入 + **仅能力档位** 标签——开放语料中**不含**厂商模型 ID），以及与 RouterBench v2 指南 **第 11 节** 对齐的 **评测指标**（通过率、名义成本节省分值、名义节省金额等）。
+如果你正在为高消耗、多轮次场景构建路由系统，你可以使用本数据集提供的真实前缀（多轮对话 + 工具返回 + diff 等），来 **评测你的路由器** 或 **训练档位预测模型**。
 
-## 安装
+## 快速开始
 
-在本目录下开发可编辑安装：
-
+**1. 安装**
 ```bash
+# 本地开发可编辑安装：
 pip install -e .
-```
 
-发布到 PyPI 后，使用者可：
-
-```bash
+# 发布到 PyPI 后：
 pip install CommonRouterBench
 ```
+*（注：pip 安装包名为 `CommonRouterBench`，代码中使用 `import main`）*
 
-代码中仍使用 `**import main**`；**pip 包名**与 **Python 包名**刻意不同。
+**2. 评测你的路由**
+```python
+from main.eval import FunctionPredictor, run_question_bank_eval
 
-核心包依赖 `**requests`**，用于 HTTP 辅助（`main.router_llm`）。
+# 示例：一个总是预测金标档位的 oracle 路由
+oracle = FunctionPredictor(lambda row: row["target_tier_id"])
+summary = run_question_bank_eval(oracle, n=20, seed=1)
+print(summary["router_accounting"])
+```
 
-### 本地测试（不 push）
+---
 
-可在 `pyproject.toml` 旁保留 **`tests/`** 做 **pytest** 或私有脚本；该目录在 **`.gitignore`** 中，**不会**进入公开仓库。本机安装 **pytest** 后执行 **`pytest tests`** 即可。
+## 关于本发布包
+
+- **开源范围**：本目录是仓库中**唯一**计划开源的部分。对外只发布 `main` 包、`data/` 题库与文档；**不包含**私有测试脚本。
+- **版本**：`0.1.0`（变更见 [CHANGELOG.md](CHANGELOG.md)）。
+- **依赖**：核心包依赖 `requests` 用于 HTTP 辅助。
+- **本地测试**：你可以在本目录下建立 `tests/` 目录运行 `pytest`，该目录已被 `.gitignore` 忽略，不会提交。
 
 ## 目录结构
 
@@ -55,7 +64,7 @@ pip install CommonRouterBench
 题库**不包含** `optimal_model`、`baseline_model` 等字段。监督目标**仅**为能力档位，使用**英文**标签与**数字** id。
 
 
-| `target_tier`（字符串） | `target_tier_id`（整数） | 指南中文档标签 |
+| `target_tier`（字符串） | `target_tier_id`（整数） | 中文档位名 |
 | ------------------ | -------------------- | ------- |
 | `low`              | 0                    | 低       |
 | `mid`              | 1                    | 中       |
@@ -108,7 +117,7 @@ pip install CommonRouterBench
 | `swebench`   | 336 | 43    | 35    | 46         | 212    |
 
 
-## 名义定价（第 11.2 节）
+## 名义定价（输出 token）
 
 
 | 公开 `target_tier` | 每百万 **输出** token 的 USD |
@@ -148,7 +157,7 @@ pip install CommonRouterBench
 
 ## 记分规则（路由步骤评测）
 
-下列指标由 `**main.eval**` 计算。它们评测**单条监督步骤上的档位选择**，使用上表按档位的 **每百万 token 名义输出价**。在 **逐步** 意义上与 RouterBench v2 指南 **§11.2 名义成本构造**一致；**不要求**把完整 benchmark 任务跑到结束。
+下列指标由 `**main.eval**` 计算。它们评测**单条监督步骤上的档位选择**，使用上表按档位的 **每百万 token 名义输出价** 做 **逐步** 名义成本比较；**不要求**把完整 benchmark 任务跑到结束。
 
 
 | 指标                        | 定义                                                                                                                                                                                                                                                                                                                            |
@@ -157,10 +166,10 @@ pip install CommonRouterBench
 | `**valid_response_rate`** | 得到有效预测（未记录 `error`）的行占比。                                                                                                                                                                                                                                                                                                      |
 | **通过（`passed`）**          | `pred_tier_id >= gold_tier_id`（预测档位能力不低于金标）。带 `error` 的行**不算**通过。                                                                                                                                                                                                                                                             |
 | `**pass_rate`**           | 全部行上 `passed / sampled`。                                                                                                                                                                                                                                                                                                      |
-| `**cost_savings_score**`  | 基线设为**始终路由到 `high`（档位 id 3）**。对每个 **已通过** 且金标**严格低于** `high` 的行，用**统一的正数完成长度** T 定义逐步名义成本（公开题库无逐步 token 数；库内用固定 T，当各步 T 相同时与 §11.2 的比例一致）：`cost(tier) = T × (该档 USD/1M) / 10^6`。再令 `save_gt = cost(high) - cost(gold)`，`save_test = cost(high) - cost(pred)`。在 `save_gt > 0` 的已通过行上，**得分 = `100 × Σ save_test / Σ save_gt`**。 |
+| `**cost_savings_score**`  | 基线设为**始终路由到 `high`（档位 id 3）**。对每个 **已通过** 且金标**严格低于** `high` 的行，用**统一的正数完成长度** T 定义逐步名义成本（公开题库无逐步 token 数；库内用固定 T，当各步 T 相同时节省比例有明确含义）：`cost(tier) = T × (该档 USD/1M) / 10^6`。再令 `save_gt = cost(high) - cost(gold)`，`save_test = cost(high) - cost(pred)`。在 `save_gt > 0` 的已通过行上，**得分 = `100 × Σ save_test / Σ save_gt`**。 |
 
 
-**与完整指南的关系：** RouterBench v2 **§11.1 任务通过率**（例如 SWE-Bench 是否 Resolved）需要带**已执行轨迹**的**端到端**评测架。本题库评测是 **路由监督** 切片：在所述假设下，衡量路由器 **档位选择是否够用**（`pass_rate`）以及相对「始终最高档」能省多少 **名义费用**（`cost_savings_score`）。
+**与任务级 benchmark 的关系：** **任务通过率**（例如 SWE-Bench 是否 Resolved）需要带**已执行轨迹**的**端到端**评测架。本题库评测是 **路由监督** 切片：在所述假设下，衡量路由器 **档位选择是否够用**（`pass_rate`）以及相对「始终最高档」能省多少 **名义费用**（`cost_savings_score`）。
 
 ### 账本式路由指标（`router_accounting`）
 
@@ -170,7 +179,7 @@ pip install CommonRouterBench
 |------|------|
 | **`pass_rate_percent`** | `100 × (pred ≥ gold) / n_e`。`n_e=0` 时为 NaN。 |
 | **`exact_match_rate_percent`** | `100 × (pred == gold) / n_e`，与可评集上 `tier_match_accuracy × 100` 一致。`n_e=0` 时为 NaN。 |
-| **`accounting_savings_score_percent`** | `100 × N / D`。**D** = 可评行上名义 `cost(high) − cost(gold)` 之和（\(T\) 与 §11 一致）。**N**：**通过**行加 `cost(high) − cost(pred)`；**失败**（`pred < gold`）加 **`−(pred + 1)`**（无量纲惩罚）。**恒 pred=high** 且 `D>0` 时为 **0**；失败多时可为**负**；**D=0**（例如金标全是 high）或 `n_e=0` 时为 NaN。 |
+| **`accounting_savings_score_percent`** | `100 × N / D`。**D** = 可评行上名义 `cost(high) − cost(gold)` 之和（\(T\) 与上文 **`cost_savings_score`** 一致）。**N**：**通过**行加 `cost(high) − cost(pred)`；**失败**（`pred < gold`）加 **`−(pred + 1)`**（无量纲惩罚）。**恒 pred=high** 且 `D>0` 时为 **0**；失败多时可为**负**；**D=0**（例如金标全是 high）或 `n_e=0` 时为 NaN。 |
 | **`overall_score_percent`** | **`(pass_rate_percent + exact_match_rate_percent + accounting_savings_score_percent) / 3`**。三个分量中**任一**为 NaN 时，总分也为 **NaN**。 |
 
 
