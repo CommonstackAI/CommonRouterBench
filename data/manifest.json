@@ -1,7 +1,7 @@
 {
   "schema": "tier_only_question_bank",
   "question_bank": "data/question_bank.jsonl",
-  "total_line_count": 974,
+  "total_line_count": 1010,
   "target_fields": [
     "target_tier",
     "target_tier_id"
@@ -10,7 +10,7 @@
   "sources": {
     "bfcl": {
       "source_path": "bfcl/bfcl_routing_supervision.jsonl",
-      "line_count": 212,
+      "line_count": 248,
       "sample_fields": {
         "benchmark": "bfcl",
         "benchmark_version": "v4",
