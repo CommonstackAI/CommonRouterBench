@@ -1,23 +1,20 @@
 {
   "schema": "tier_only_question_bank",
   "question_bank": "data/question_bank.jsonl",
-  "total_line_count": 1010,
+  "total_line_count": 970,
   "target_fields": [
     "target_tier",
     "target_tier_id"
   ],
   "no_model_ids_in_records": true,
-  "optional_fields": {
-    "functions": "List of tool/function schemas (name, description, parameters). Present only in bfcl records."
-  },
   "sources": {
-    "bfcl": {
-      "source_path": "bfcl/bfcl_routing_supervision.jsonl",
-      "line_count": 248,
+    "pinchbench": {
+      "source_path": "test/pinchbench/mixed_model_data",
+      "line_count": 48,
       "sample_fields": {
-        "benchmark": "bfcl",
-        "benchmark_version": "v4",
-        "pipeline_stage": "ground_truth_ready"
+        "benchmark": "pinchbench",
+        "benchmark_version": "mixed_model_validated_2026-04-15",
+        "pipeline_stage": "mixed_model_validated"
       }
     },
     "swebench": {
@@ -26,15 +23,6 @@
       "sample_fields": {
         "benchmark": "swebench",
         "benchmark_version": "swebench_verified_40_2026-04-06_gtfix25_fullroute",
-        "pipeline_stage": "degradation_search_done"
-      }
-    },
-    "pinchbench": {
-      "source_path": "pinchbench/pinchbench_exp2_routing_supervision.jsonl",
-      "line_count": 88,
-      "sample_fields": {
-        "benchmark": "pinchbench",
-        "benchmark_version": "exp2_relaxed_total_cost_2026-04-04_postfix",
         "pipeline_stage": "degradation_search_done"
       }
     },
@@ -53,6 +41,15 @@
       "sample_fields": {
         "benchmark": "qmsum",
         "benchmark_version": null,
+        "pipeline_stage": "ground_truth_ready"
+      }
+    },
+    "bfcl": {
+      "source_path": "bfcl/bfcl_routing_supervision.jsonl",
+      "line_count": 248,
+      "sample_fields": {
+        "benchmark": "bfcl",
+        "benchmark_version": "v4",
         "pipeline_stage": "ground_truth_ready"
       }
     }

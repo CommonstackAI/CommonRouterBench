@@ -6,8 +6,12 @@ All notable changes to the open-source **CommonRouterBench** Python distribution
 
 ### Changed
 
-- Refreshed the public `bfcl` rows in `data/question_bank.jsonl` / `data/manifest.json` from the latest export and expanded the shipped BFCL subset from **single-turn only** to **single-turn + multi-turn**.
-- Updated the README files to reflect the new public corpus size (**974** rows) and the full BFCL inclusion.
+- **PinchBench data rebuild**: replaced baseline (gpt-5.4) conversation context with validated mixed-model context from actual cascade search runs. Messages now reflect the real optimal-path model responses at each step.
+- PinchBench reduced from 16 tasks / 88 rows to 12 tasks / 48 rows: removed 4 tasks with incomplete mixed-model data (task_10_workflow, task_17_email_search, task_20_eli5_pdf_summary, task_21_openclaw_comprehension).
+- Corrected 3 PinchBench GT tier labels after last-step downgrade validation: task_05_summary step 4 (high→low), task_11_clawdhub step 4 (mid→low), task_12_skill_search step 6 (high→low). These final steps are text-reply summaries where low-tier models score equivalently.
+- Total question bank: **970** rows (was 1010).
+- `build_open_data.py` now reads PinchBench from `test/pinchbench/mixed_model_data/` instead of upstream baseline-only export.
+- Updated README/README.zh distribution tables to match new counts.
 
 ## [0.1.0] - 2026-04-09
 

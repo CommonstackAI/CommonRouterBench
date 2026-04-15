@@ -76,7 +76,7 @@ print(summary["router_accounting"])
 
 ## 数据分布
 
-下列统计与当前仓库中的 **`data/question_bank.jsonl`**、**`data/manifest.json`** 一致（共 **1010** 条路由监督步骤）。若从私有流水线重新构建题库，数字可能变化。
+下列统计与当前仓库中的 **`data/question_bank.jsonl`**、**`data/manifest.json`** 一致（共 **970** 条路由监督步骤）。若从私有流水线重新构建题库，数字可能变化。
 
 对 **BFCL** 而言，公开题库现在同时包含 **single-turn** 与 **multi-turn** 路由监督数据。
 
@@ -85,12 +85,12 @@ print(summary["router_accounting"])
 
 | `benchmark`  | 行数       | 占全库比例    |
 | ------------ | -------- | -------- |
-| `swebench`   | 336      | 33.3%    |
-| `bfcl`       | 248      | 24.6%    |
-| `mtrag`      | 193      | 19.1%    |
-| `qmsum`      | 145      | 14.4%    |
-| `pinchbench` | 88       | 8.7%     |
-| **合计**       | **1010** | **100%** |
+| `swebench`   | 336      | 34.6%    |
+| `bfcl`       | 248      | 25.6%    |
+| `mtrag`      | 193      | 19.9%    |
+| `qmsum`      | 145      | 14.9%    |
+| `pinchbench` | 48       | 4.9%     |
+| **合计**       | **970** | **100%** |
 
 
 ### 金标 `target_tier`（全库）
@@ -98,11 +98,11 @@ print(summary["router_accounting"])
 
 | `target_tier` | `target_tier_id` | 行数       | 占比       |
 | ------------- | ---------------- | -------- | -------- |
-| `low`         | 0                | 701      | 69.4%    |
-| `mid`         | 1                | 73       | 7.2%     |
-| `mid_high`    | 2                | 54       | 5.3%     |
-| `high`        | 3                | 182      | 18.0%    |
-| **合计**        | —                | **1010** | **100%** |
+| `low`         | 0                | 677      | 69.8%    |
+| `mid`         | 1                | 66       | 6.8%     |
+| `mid_high`    | 2                | 51       | 5.3%     |
+| `high`        | 3                | 176      | 18.1%    |
+| **合计**        | —                | **970** | **100%** |
 
 
 ### 各 `benchmark` 下金标 `target_tier`（行数）
@@ -112,7 +112,7 @@ print(summary["router_accounting"])
 | ------------ | --- | ----- | ----- | ---------- | ------ |
 | `bfcl`       | 248 | 239   | 8     | 1          | 0      |
 | `mtrag`      | 193 | 183   | 8     | 1          | 1      |
-| `pinchbench` | 88  | 65    | 10    | 6          | 7      |
+| `pinchbench` | 48  | 41    | 3     | 3          | 1      |
 | `qmsum`      | 145 | 132   | 10    | 3          | 0      |
 | `swebench`   | 336 | 82    | 37    | 43         | 174    |
 
@@ -147,7 +147,7 @@ print(summary["router_accounting"])
 
 ### 抽样
 
-- **全量题库** — `run_question_bank_eval(..., n=None)`：按**文件顺序**遍历每一行（当前公开构建约 1010 步）。
+- **全量题库** — `run_question_bank_eval(..., n=None)`：按**文件顺序**遍历每一行（当前公开构建约 970 步）。
 - **固定条数、按来源分层** — API 传 `n=N`：按 `data/manifest.json` 里 `sources.*.line_count` 做 **最大余数法** 配额，再对每个 benchmark 层做 **一遍扫描的蓄水池抽样**（`--seed` 固定随机数）。使五个逻辑 benchmark（`swebench`、`pinchbench`、`mtrag`、`qmsum`、`bfcl`）在全库中的占比与完整语料大致一致。
 
 请在评测 JSON 中报告 **`sample_mode`**、**`benchmark_counts`**、**`by_benchmark`**，以便他人复现你的划分。
