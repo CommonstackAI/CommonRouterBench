@@ -36,7 +36,7 @@ print(summary["router_accounting"])
 
 - **开源范围**：本目录是仓库中**唯一**计划开源的部分。对外只发布 `main` 包、`data/` 题库与文档；**不包含**私有测试脚本。
 - **版本**：`0.1.0`（变更见 [CHANGELOG.md](CHANGELOG.md)）。
-- **依赖**：核心包依赖 `requests`（`main.router_llm` 等 HTTP 辅助）与 `tiktoken`（`main.tokenizer` 中用于 `router_accounting` 的 token 计数）。
+- **依赖**：核心包依赖 `requests`（`main.router_llm` 等 HTTP 辅助）、`tiktoken`（回退 token 计数）以及 `tokenizers`（HuggingFace——各厂商原生 tokenizer，用于 `main.tokenizer`）。
 - **本地测试**：你可以在本目录下建立 `tests/` 目录运行 `pytest`，该目录已被 `.gitignore` 忽略，不会提交。
 
 ## 目录结构
@@ -134,10 +134,12 @@ print(summary["router_accounting"])
 
 | 公开 `target_tier` | 每百万 **input**（USD） | 每百万 **cache read**（USD） | 每百万 **cache write**（USD） |
 | ---------------- | --------------------- | -------------------------- | --------------------------- |
-| `low`            | 0.26                  | 0.13                       | 0.0                         |
-| `mid`            | 0.30                  | 0.059                      | 0.0                         |
+| `low`            | 0.26                  | 0.13                       | 0.26                        |
+| `mid`            | 0.30                  | 0.059                      | 0.30                        |
 | `mid_high`       | 0.50                  | 0.05                       | 0.08333                     |
 | `high`           | 5.0                   | 0.50                       | 6.25                        |
+
+对于没有公开 cache write 标价的档位（`low`、`mid`），我们保守假设 cache write = 基础 input 价格。
 
 在评测管线里根据**具体模型端点**算成本时，本库会把已知模型 id 映射到上述档位；未知 id 会抛出 `ValueError`。该映射只存在于代码中，**不在**开放 JSONL 里。
 
@@ -188,11 +190,21 @@ print(summary["router_accounting"])
 
 ### Token 计数（`main.tokenizer`）
 
-从每行 **`messages`** 用 **`tiktoken`** 计数；编码名在 **`TIER_TOKENIZER_ENCODING`**（当前各档均为 **`cl100k_base`** 的离线近似，可在该常量处替换为各厂商真实 tokenizer）。
+从每行 **`messages`** 用各档位对应的**厂商原生 tokenizer** 统计 token。每个档位的 tokenizer 由 `_load_tier_encoder` 加载（按 tier 缓存）：
+
+| 档位 | Tokenizer | 来源 |
+|------|-----------|------|
+| `high` | Anthropic 原生 | 内置 JSON（`main/tokenizer_data/anthropic_tokenizer.json`） |
+| `mid_high` | `cl100k_base` | Gemini 无离线 tokenizer；使用 `tiktoken` 回退 |
+| `mid` | MiniMax 原生 | HuggingFace `MiniMaxAI/MiniMax-Text-01` |
+| `low` | DeepSeek 原生 | HuggingFace `deepseek-ai/DeepSeek-V3` |
+
+若 `tokenizers` 包未安装，所有档位均回退到 `tiktoken` `cl100k_base`。每条消息固定加 4 token overhead、整段末尾加 2 priming token，用于近似 chat 格式的包装开销。
 
 - **语义前缀：** 相邻两步的 **`messages`** 在 **`role`**、**`content`**（字符串或块列表；块内忽略 **`cache_control`**）、**`tool_calls`**、**`tool_call_id`**、**`name`** 上比较，避免上游日志序列化差异误判缓存。
-- **prompt 拆分（baseline / gold / pred 各自一条路径）：** baseline 恒为 **`high`**。若该路径上本步档位与上步**不同**，本步整段 prompt 按 **input** 计价（冷启动）。若**相同**且上步 **`messages`** 是当前步的**语义前缀**，则前缀为 **cache read**、增量为 **cache write**；否则回退为仅 **input**。
-- **输出 token：** 有下一步时，从 **`messages`** 增量中只计 **`role=assistant`**（含 **`tool_calls`** JSON）；该步使用**金标**档位在 **`TIER_TOKENIZER_ENCODING`** 中的编码做计数。轨迹最后一步用前面步估算值的平均，否则用 **`fallback_output_tokens`**（见 `router_accounting` 字段）。
+- **prompt 拆分（baseline / gold / pred 各自一条路径）：** baseline 恒为 **`high`**。**冷启动**（首步、换档、缓存 TTL 超时、或前缀不匹配）时整段 prompt 按 **cache write** 计价。若档位**未变**、缓存未过期、且上步 **`messages`** 是当前步的**语义前缀**，则前缀为 **cache read**、增量为 **cache write**。
+- **缓存 TTL：** 同一档位（即同一模型）距上次调用超过 **3 个全局步** 即视为缓存过期，触发全量 cache write。这模拟了多步 agent 轨迹中不同档位交替调用时的真实 prompt cache 失效场景。
+- **输出 token：** 有下一步时，从 **`messages`** 增量中只计 **`role=assistant`**（含 **`tool_calls`** JSON）；该步使用**金标**档位对应的 tokenizer 做计数。轨迹最后一步用前面步估算值的平均，否则用 **`fallback_output_tokens`**（见 `router_accounting` 字段）。
 
 ### 账本式路由指标（`router_accounting`）
 

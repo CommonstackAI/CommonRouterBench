@@ -24,6 +24,10 @@ _ASSUMED_COMPLETION_TOKENS_PER_ROUTING_STEP = 1_000_000
 # (single-turn cases / last step of a trajectory with no internal references).
 _FALLBACK_OUTPUT_TOKENS = 500
 
+# Cache TTL: if the same tier was last called more than this many global steps
+# ago, the cache is considered expired and a full cache-write is needed.
+_CACHE_TTL_STEPS = 3
+
 
 def _step_nominal_usd(tier_id: int) -> float:
     return step_nominal_cost_usd(
@@ -102,6 +106,7 @@ def _compute_path_step_cost(
     msgs_curr: list[dict[str, Any]],
     msgs_prev: list[dict[str, Any]] | None,
     output_tokens: int,
+    cache_expired: bool = False,
 ) -> float:
     """Full cost (input + cache + output) for one step on a given routing path."""
     inp, cr, cw = split_prompt_tokens_for_step(
@@ -109,6 +114,7 @@ def _compute_path_step_cost(
         curr_tier=tier,
         msgs_prev=msgs_prev,
         msgs_curr=msgs_curr,
+        cache_expired=cache_expired,
     )
     return step_full_cost_usd(
         input_tokens=inp,
@@ -155,10 +161,13 @@ def compute_router_accounting_metrics(rows: list[dict[str, Any]]) -> dict[str, A
     **Pass/fail at trajectory level**: a trajectory *fails* if any step has an
     ``error`` or any step's ``pred_tier_id < gold_tier_id``.
 
-    **Cost model**: each step's cost = input + cache_read + cache_write + output,
+    **Cost model**: each step's cost = cache_read + cache_write + output,
     computed separately for baseline (always ``high``), gold, and pred paths.
-    Tier switches between consecutive steps reset the cache (cold start = all
-    input); same-tier continuation uses cache_read + cache_write.
+    Cold starts (first step, tier switch, prefix mismatch, or cache TTL
+    exceeded) bill all prompt tokens as cache_write; same-tier continuation
+    within TTL uses cache_read for the prefix and cache_write for the delta.
+    Cache TTL: if the same tier was last called more than 3 global steps ago,
+    the cache is considered expired.
 
     * ``pass_rate_percent``: trajectory-level pass rate (100 * passed_trajectories / total)
     * ``exact_match_rate_percent``: 100 * (all steps exact) / total trajectories
@@ -233,9 +242,17 @@ def compute_router_accounting_metrics(rows: list[dict[str, Any]]) -> dict[str, A
         # Build a step_index -> position lookup for the sorted trajectory
         step_idx_to_pos = {s.get("step_index", 1): i for i, s in enumerate(steps)}
 
+        # Per-path TTL tracking: tier -> last global step_index that used this tier.
+        # Baseline always uses _BASELINE_TIER so its cache never expires via TTL
+        # (step distance is always 1).  Gold and pred paths may switch tiers.
+        baseline_last_call: dict[str, int] = {}
+        gold_last_call: dict[str, int] = {}
+        pred_last_call: dict[str, int] = {}
+
         for s in evaluable_steps:
             n_evaluable_steps += 1
             pos = step_idx_to_pos[s.get("step_index", 1)]
+            global_step = s.get("step_index", 1)
             pred_tier_id: int = s["pred_tier_id"]
             gold_tier_id: int = s["gold_tier_id"]
             pred_tier = ID_TO_TIER[pred_tier_id]
@@ -243,7 +260,7 @@ def compute_router_accounting_metrics(rows: list[dict[str, Any]]) -> dict[str, A
             msgs_curr: list[dict[str, Any]] = s.get("messages", [])
             output_tok = output_tokens_list[pos]
 
-            # Previous step info (for cache logic)
+            # Previous step info (for cache logic — semantic prefix check)
             msgs_prev: list[dict[str, Any]] | None = None
             prev_baseline_tier: str | None = None
             prev_gold_tier: str | None = None
@@ -255,6 +272,17 @@ def compute_router_accounting_metrics(rows: list[dict[str, Any]]) -> dict[str, A
                 prev_gold_tier = ID_TO_TIER[prev_s["gold_tier_id"]] if isinstance(prev_s.get("gold_tier_id"), int) else None
                 prev_pred_tier = ID_TO_TIER[prev_s["pred_tier_id"]] if isinstance(prev_s.get("pred_tier_id"), int) else None
 
+            # TTL-based cache expiry for each path
+            def _is_cache_expired(last_call: dict[str, int], tier: str) -> bool:
+                prev_step = last_call.get(tier)
+                if prev_step is None:
+                    return False  # first call handled by prev_tier=None
+                return (global_step - prev_step) > _CACHE_TTL_STEPS
+
+            baseline_expired = _is_cache_expired(baseline_last_call, _BASELINE_TIER)
+            gold_expired = _is_cache_expired(gold_last_call, gold_tier)
+            pred_expired = _is_cache_expired(pred_last_call, pred_tier)
+
             # Baseline cost (always high tier)
             baseline_cost = _compute_path_step_cost(
                 tier=_BASELINE_TIER,
@@ -262,6 +290,7 @@ def compute_router_accounting_metrics(rows: list[dict[str, Any]]) -> dict[str, A
                 msgs_curr=msgs_curr,
                 msgs_prev=msgs_prev,
                 output_tokens=output_tok,
+                cache_expired=baseline_expired,
             )
 
             # Gold cost
@@ -271,6 +300,7 @@ def compute_router_accounting_metrics(rows: list[dict[str, Any]]) -> dict[str, A
                 msgs_curr=msgs_curr,
                 msgs_prev=msgs_prev,
                 output_tokens=output_tok,
+                cache_expired=gold_expired,
             )
 
             # Pred cost
@@ -280,7 +310,13 @@ def compute_router_accounting_metrics(rows: list[dict[str, Any]]) -> dict[str, A
                 msgs_curr=msgs_curr,
                 msgs_prev=msgs_prev,
                 output_tokens=output_tok,
+                cache_expired=pred_expired,
             )
+
+            # Update TTL trackers
+            baseline_last_call[_BASELINE_TIER] = global_step
+            gold_last_call[gold_tier] = global_step
+            pred_last_call[pred_tier] = global_step
 
             d_sum += baseline_cost - gold_cost
 

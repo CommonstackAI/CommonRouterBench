@@ -31,9 +31,11 @@ TIER_CACHE_READ_USD_PER_1M: dict[str, float] = {
 }
 
 # USD per 1M cache-write tokens.
+# For tiers without a published cache-write price, we conservatively assume
+# cache_write = base input price (the lowest possible write cost).
 TIER_CACHE_WRITE_USD_PER_1M: dict[str, float] = {
-    TIER_LOW: 0.0,
-    TIER_MID: 0.0,
+    TIER_LOW: 0.26,
+    TIER_MID: 0.30,
     TIER_MID_HIGH: 0.08333,
     TIER_HIGH: 6.25,
 }

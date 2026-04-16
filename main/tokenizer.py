@@ -1,53 +1,99 @@
 """Per-tier token counting and prompt-token splitting for cost calculation.
 
-Each public tier is bound to a representative model whose tokenizer determines
-the token count.  Currently all tiers use ``tiktoken cl100k_base`` as a
-documented offline approximation.  The mapping is centralised in
-``TIER_TOKENIZER_ENCODING`` so that real tokenizers can be swapped in later
-without touching call sites.
+Each public tier uses its vendor's native tokenizer where available:
 
-Representative models per tier
-------------------------------
-* high        — ``anthropic/claude-opus-4-6``
-* mid_high    — ``anthropic/claude-haiku-4-5``
-* mid         — ``minimax/minimax-m2.5``
-* low         — ``deepseek/deepseek-v3.2``
+* high        — Anthropic native tokenizer (bundled JSON, from claude-opus-4-6 family)
+* mid_high    — ``cl100k_base`` (Gemini has no offline tokenizer; this is the fallback)
+* mid         — MiniMax native tokenizer (HuggingFace: ``MiniMaxAI/MiniMax-Text-01``)
+* low         — DeepSeek native tokenizer (HuggingFace: ``deepseek-ai/DeepSeek-V3``)
+
+The ``tokenizers`` (HuggingFace) package is required for native tokenizer support.
+If it is not installed, all tiers fall back to ``tiktoken cl100k_base``.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from functools import lru_cache
-from typing import Any
+from pathlib import Path
+from typing import Any, Protocol
 
 import tiktoken
 
 from main.tiers import TIER_HIGH, TIER_LOW, TIER_MID, TIER_MID_HIGH
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
-# Tier → tiktoken encoding name.
-# All tiers currently fall back to cl100k_base because the vendors above do not
-# publish a standalone offline tokenizer library.  Swap encoding names here when
-# proper tokenizers become available.
+# Tokenizer abstraction — unifies tiktoken and HuggingFace tokenizers
 # ---------------------------------------------------------------------------
-TIER_TOKENIZER_ENCODING: dict[str, str] = {
-    TIER_HIGH: "cl100k_base",
-    TIER_MID_HIGH: "cl100k_base",
-    TIER_MID: "cl100k_base",
-    TIER_LOW: "cl100k_base",
+
+class _TokenEncoder(Protocol):
+    def count(self, text: str) -> int: ...
+
+
+class _TiktokenEncoder:
+    def __init__(self, encoding_name: str) -> None:
+        self._enc = tiktoken.get_encoding(encoding_name)
+
+    def count(self, text: str) -> int:
+        return len(self._enc.encode(text))
+
+
+class _HuggingFaceEncoder:
+    def __init__(self, tokenizer: Any) -> None:
+        self._tok = tokenizer
+
+    def count(self, text: str) -> int:
+        return len(self._tok.encode(text).ids)
+
+
+# ---------------------------------------------------------------------------
+# Tier → tokenizer singleton loading
+# ---------------------------------------------------------------------------
+
+_FALLBACK_ENCODING = "cl100k_base"
+
+_ANTHROPIC_TOKENIZER_PATH = Path(__file__).parent / "tokenizer_data" / "anthropic_tokenizer.json"
+
+_HF_TOKENIZER_IDENTIFIERS: dict[str, str] = {
+    TIER_MID: "MiniMaxAI/MiniMax-Text-01",
+    TIER_LOW: "deepseek-ai/DeepSeek-V3",
 }
 
 
 @lru_cache(maxsize=8)
-def _get_encoding(name: str) -> tiktoken.Encoding:
-    return tiktoken.get_encoding(name)
+def _load_tier_encoder(tier: str) -> _TokenEncoder:
+    """Load the best available tokenizer for *tier*."""
+    try:
+        from tokenizers import Tokenizer as HFTokenizer
+    except ImportError:
+        logger.warning(
+            "tokenizers package not installed; falling back to cl100k_base for all tiers"
+        )
+        return _TiktokenEncoder(_FALLBACK_ENCODING)
 
+    if tier == TIER_HIGH:
+        if _ANTHROPIC_TOKENIZER_PATH.exists():
+            tok = HFTokenizer.from_str(_ANTHROPIC_TOKENIZER_PATH.read_text(encoding="utf-8"))
+            return _HuggingFaceEncoder(tok)
+        logger.warning("Anthropic tokenizer JSON not found; falling back to cl100k_base for high tier")
+        return _TiktokenEncoder(_FALLBACK_ENCODING)
 
-def _encoding_for_tier(tier: str) -> tiktoken.Encoding:
-    enc_name = TIER_TOKENIZER_ENCODING.get(tier)
-    if enc_name is None:
-        raise ValueError(f"No tokenizer encoding configured for tier {tier!r}")
-    return _get_encoding(enc_name)
+    hf_id = _HF_TOKENIZER_IDENTIFIERS.get(tier)
+    if hf_id is not None:
+        try:
+            tok = HFTokenizer.from_pretrained(hf_id)
+            return _HuggingFaceEncoder(tok)
+        except Exception:
+            logger.warning(
+                "Failed to load HuggingFace tokenizer %s for tier %s; falling back to cl100k_base",
+                hf_id, tier,
+            )
+            return _TiktokenEncoder(_FALLBACK_ENCODING)
+
+    return _TiktokenEncoder(_FALLBACK_ENCODING)
 
 
 # ---------------------------------------------------------------------------
@@ -92,20 +138,19 @@ def _message_text(msg: dict[str, Any]) -> str:
 
 def count_messages_tokens(messages: list[dict[str, Any]], tier: str) -> int:
     """Count total tokens in *messages* using the tokenizer bound to *tier*."""
-    enc = _encoding_for_tier(tier)
+    encoder = _load_tier_encoder(tier)
     total = 0
     for msg in messages:
-        total += len(enc.encode(_message_text(msg)))
-        # ~4 tokens overhead per message for role / separators (OpenAI convention).
-        total += 4
+        total += encoder.count(_message_text(msg))
+        total += 4  # ~4 tokens overhead per message for role / separators
     total += 2  # priming tokens
     return total
 
 
 def count_text_tokens(text: str, tier: str) -> int:
     """Count tokens for a raw text string."""
-    enc = _encoding_for_tier(tier)
-    return len(enc.encode(text))
+    encoder = _load_tier_encoder(tier)
+    return encoder.count(text)
 
 
 # ---------------------------------------------------------------------------
@@ -178,27 +223,33 @@ def split_prompt_tokens_for_step(
     curr_tier: str,
     msgs_prev: list[dict[str, Any]] | None,
     msgs_curr: list[dict[str, Any]],
+    cache_expired: bool = False,
 ) -> tuple[int, int, int]:
     """Return ``(input_tokens, cache_read_tokens, cache_write_tokens)``.
 
     Rules
     -----
-    * First step (``prev_tier is None``) or single-turn → all input.
-    * Tier switch (``curr_tier != prev_tier``) → cold start, all input.
-    * Same tier, semantic prefix match → cache_read for prefix, cache_write
-      for delta.
-    * Same tier, prefix mismatch → fallback to all input.
+    * First step (``prev_tier is None``) or single-turn → all cache_write
+      (cold start: the full prompt seeds the cache).
+    * Tier switch (``curr_tier != prev_tier``) → cold start, all cache_write.
+    * Cache expired (TTL exceeded) → cold start, all cache_write.
+    * Same tier, semantic prefix match, cache valid → cache_read for prefix,
+      cache_write for delta.
+    * Same tier, prefix mismatch → fallback to all cache_write.
     """
     total = count_messages_tokens(msgs_curr, curr_tier)
 
     if prev_tier is None or msgs_prev is None:
-        return (total, 0, 0)
+        return (0, 0, total)
 
     if curr_tier != prev_tier:
-        return (total, 0, 0)
+        return (0, 0, total)
+
+    if cache_expired:
+        return (0, 0, total)
 
     if not is_semantic_prefix(msgs_prev, msgs_curr):
-        return (total, 0, 0)
+        return (0, 0, total)
 
     prefix_tokens = count_messages_tokens(msgs_prev, curr_tier)
     delta_tokens = max(total - prefix_tokens, 0)
@@ -220,13 +271,13 @@ def estimate_output_tokens_from_delta(
     ``tool_calls`` JSON).  ``role=tool`` / ``role=user`` messages in the delta
     are environment or user input, not model output.
     """
-    enc = _encoding_for_tier(tier)
+    encoder = _load_tier_encoder(tier)
     n_curr = len(msgs_curr)
     delta = msgs_next[n_curr:]
 
     tokens = 0
     for msg in delta:
         if msg.get("role") == "assistant":
-            tokens += len(enc.encode(_message_text(msg)))
+            tokens += encoder.count(_message_text(msg))
             tokens += 4  # per-message overhead
     return tokens

@@ -36,7 +36,7 @@ print(summary["router_accounting"])
 
 - **What is shipped:** This directory is the **only** part of the repository intended for open source. Published artifacts ship the **`main`** package, the **`data/`** question bank, and documentation. Private test harnesses are excluded.
 - **Version:** `0.1.0` (see [CHANGELOG.md](CHANGELOG.md)).
-- **Dependencies:** The core package depends on **`requests`** (HTTP helpers in `main.router_llm`) and **`tiktoken`** (token counting for `router_accounting` in `main.tokenizer`).
+- **Dependencies:** The core package depends on **`requests`** (HTTP helpers in `main.router_llm`), **`tiktoken`** (fallback token counting), and **`tokenizers`** (HuggingFace — native vendor tokenizers for `main.tokenizer`).
 - **Local tests:** You may keep a **`tests/`** directory beside `pyproject.toml` for **pytest**; it is **`.gitignore`d**.
 
 ## Project layout
@@ -126,10 +126,12 @@ Authoritative values live in **`main.pricing`**: **`TIER_OUTPUT_USD_PER_1M`**, *
 
 | Public `target_tier` | USD / 1M **input** | USD / 1M **cache read** | USD / 1M **cache write** |
 |----------------------|--------------------|-------------------------|--------------------------|
-| `low`                | 0.26               | 0.13                    | 0.0                      |
-| `mid`                | 0.30               | 0.059                   | 0.0                      |
+| `low`                | 0.26               | 0.13                    | 0.26                     |
+| `mid`                | 0.30               | 0.059                   | 0.30                     |
 | `mid_high`           | 0.50               | 0.05                    | 0.08333                  |
 | `high`               | 5.0                | 0.50                    | 6.25                     |
+
+For tiers without a published cache-write price (`low`, `mid`), we conservatively assume cache write = base input price.
 
 When computing costs from **concrete model endpoints** inside your harness, this library maps known model ids to these tiers and raises `ValueError` on unknown ids. That mapping lives in code only, not in the open JSONL.
 
@@ -180,11 +182,21 @@ For **`router_accounting`**, **`evaluate_question_bank_rows`** and external merg
 
 ### Token counting (`main.tokenizer`)
 
-Per-step costs for **`router_accounting`** count tokens from each row’s **`messages`** using **`tiktoken`** encodings configured in **`TIER_TOKENIZER_ENCODING`** (currently **`cl100k_base`** for all tiers as an offline approximation; swap encodings there when you wire real vendor tokenizers).
+Per-step costs for **`router_accounting`** count tokens from each row’s **`messages`** using **native vendor tokenizers** where available. The tokenizer for each tier is loaded by `_load_tier_encoder` (cached per tier):
+
+| Tier | Tokenizer | Source |
+|------|-----------|--------|
+| `high` | Anthropic native | Bundled JSON (`main/tokenizer_data/anthropic_tokenizer.json`) |
+| `mid_high` | `cl100k_base` | Gemini has no offline tokenizer; `tiktoken` fallback |
+| `mid` | MiniMax native | HuggingFace `MiniMaxAI/MiniMax-Text-01` |
+| `low` | DeepSeek native | HuggingFace `deepseek-ai/DeepSeek-V3` |
+
+If the `tokenizers` package is not installed, all tiers fall back to `tiktoken` `cl100k_base`. Per-message overhead (+4 tokens per message, +2 priming) is applied uniformly to approximate chat-format bookkeeping costs.
 
 - **Semantic prefix check:** consecutive-step **`messages`** are compared on **`role`**, **`content`** (string or list-of-blocks; **`cache_control`** inside blocks is ignored), **`tool_calls`**, **`tool_call_id`**, and **`name`**, so harmless serialization differences from upstream log export do not break cache accounting.
-- **Prompt split (per path: baseline / gold / pred):** baseline tier is always **`high`**. For each path, if the path’s tier **changes** from the previous step, the full prompt at that step is priced as **input** only (cold start). If the tier is **unchanged** and the previous **`messages`** are a **semantic prefix** of the current ones, the prefix is **cache read** and the delta is **cache write**; otherwise fall back to **input** only.
-- **Output tokens:** for step *i* with a following step, estimated from **`messages`** delta (assistant role only, including **`tool_calls`** JSON), using that step’s **gold** tier encoding from **`TIER_TOKENIZER_ENCODING`**. The last step in a trajectory uses the trajectory’s average of those estimates when available, else **`fallback_output_tokens`** (see `router_accounting` JSON field).
+- **Prompt split (per path: baseline / gold / pred):** baseline tier is always **`high`**. A **cold start** (first step, tier switch, cache TTL exceeded, or prefix mismatch) bills the full prompt as **cache write**. If the tier is **unchanged**, the cache has not expired, and the previous **`messages`** are a **semantic prefix** of the current ones, the prefix is **cache read** and the delta is **cache write**.
+- **Cache TTL:** if the same tier was last called more than **3 global steps** ago, the cache is considered expired and a full cache-write is triggered. This models realistic prompt-cache expiry in multi-step agent traces where steps may be interspersed with other tiers.
+- **Output tokens:** for step *i* with a following step, estimated from **`messages`** delta (assistant role only, including **`tool_calls`** JSON), using that step’s **gold** tier tokenizer. The last step in a trajectory uses the trajectory’s average of those estimates when available, else **`fallback_output_tokens`** (see `router_accounting` JSON field).
 
 ### Router accounting metrics (`router_accounting`)
 
