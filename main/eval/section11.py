@@ -451,37 +451,55 @@ def _compute_cost_savings_per_benchmark(
     rows: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     """
-    Full-cost savings aggregation per benchmark.  **All gold tiers are included**
+    Full-cost savings aggregation per benchmark under the **natural-accounting**
+    user-bill model (trajectory-level pass/fail).  All gold tiers are included
     (no row is excluded; gold=high steps are accounted for by every path's real
     cost under the full-cost model).
 
-    Denominator:
-        D_b += baseline_cost   # always-high total bill per evaluable step
+    User-bill model:
+        passed trajectory  -> user_bill = Σ pred_cost                    (router ran successfully)
+        failed  trajectory -> user_bill = Σ pred_cost + Σ baseline_cost  (router's whole chain
+                                                                          wasted + one always-high
+                                                                          re-run of every step)
 
-    Numerator (step-level pass/fail):
-        if pred_tier_id >= gold_tier_id:  N_b += baseline_cost - pred_cost
-        else:                              N_b -= pred_cost
+    Trajectory-level accumulation (same grouping as
+    ``compute_router_accounting_metrics``):
 
-    Trajectory-level retry penalty — applies to **every failed trajectory**
-    (any step has an error or ``pred_tier_id < gold_tier_id``), regardless of
-    whether it is single-step or multi-turn:
-        N_b -= Σ baseline_cost over all evaluable steps of that trajectory
-        (one extra always-high re-run of the whole trajectory; for a single-
-        step trajectory this is one baseline step cost, for an N-step
-        trajectory this is N baseline step costs)
+        D_b += baseline_cost                                   # per evaluable step
+        if trajectory_passed:                                  # no error AND every step pred>=gold
+            N_b += baseline_cost - pred_cost                   # credit step-level savings
+        else:                                                  # any error or any step pred<gold
+            N_b -= pred_cost                                   # router's step cost is wasted;
+                                                               # the Σ baseline retry is already
+                                                               # covered by D - (user_bill - pred)
 
-    Interpretation: ``cost_savings_score = 100 * N / D`` with D = "what you
-    would have paid at always-high".  Pass steps add the saved delta; fail
-    steps subtract the wasted cheap call; failed trajectories additionally
-    deduct one full baseline re-run.  Score lies in ``(-∞, 100]``; stays in
-    ``[0, 100]`` as long as total waste + retry is below the baseline total.
+    Verification (all-failed trajectory, all steps pred<gold):
+        Σ N = -Σ pred;  savings = Σ baseline - user_bill = Σ baseline - (Σ pred + Σ baseline)
+                              = -Σ pred.  ✓ matches.
+
+    Verification (mixed failed trajectory, some steps passed):
+        Every step contributes -pred regardless of step-level pass/fail —
+        because the whole chain has to be re-run once the trajectory failed,
+        the step-level "savings" on individually-passed steps inside a failed
+        trajectory are not credited.  This matches the user's intent that a
+        failed multi-turn trajectory costs "router's whole chain pred + one
+        full-high re-run of the whole chain".
+
+    Interpretation: ``cost_savings_score = 100 * N / D`` reads as "fraction of
+    the always-high total bill that was actually saved, after accounting for
+    one always-high retry on every failed trajectory".  Score lies in
+    ``(-∞, 100]``; stays in ``[0, 100]`` as long as total waste + implicit
+    retry stays below the baseline total.
 
     Returns per-benchmark dict:
         {
             "D_usd", "N_usd",
             "step_count",                  # evaluable step count (no error)
             "failed_trajectory_count",
-            "retry_penalty_usd",           # Σ retry penalty applied to this benchmark
+            "failed_retry_baseline_usd",   # Σ baseline_cost over all evaluable
+                                           # steps of every failed trajectory —
+                                           # informational only; already implicit
+                                           # in the N = -Σ pred formula.
         }
 
     Note: ``input/cache_read/cache_write/output`` are all combined inside
@@ -498,50 +516,58 @@ def _compute_cost_savings_per_benchmark(
             "N_usd": 0.0,
             "step_count": 0,
             "failed_trajectory_count": 0,
-            "retry_penalty_usd": 0.0,
+            "failed_retry_baseline_usd": 0.0,
         }
     )
 
-    traj_to_bench: dict[str, str] = {}
-    traj_baseline_sum: dict[str, float] = defaultdict(float)
+    traj_status = _build_trajectory_status(rows)
+
+    failed_traj_seen_by_bench: dict[str, set[str]] = defaultdict(set)
 
     for rec in _iter_trajectory_step_costs(rows):
         s = rec["step"]
         b = s["benchmark"]
         iid = rec["instance_id"]
-        traj_to_bench[iid] = b
-        traj_baseline_sum[iid] += rec["baseline_cost"]
+        st = traj_status.get(iid)
+        if st is None:
+            raise ValueError(
+                f"trajectory status missing for evaluable row (iid={iid!r}); "
+                "this indicates _build_trajectory_status / _iter_trajectory_step_costs "
+                "are out of sync."
+            )
+        trajectory_passed = not st["has_error"] and st["all_pass"]
 
         pb = per_bench[b]
         pb["step_count"] += 1
         pb["D_usd"] += rec["baseline_cost"]
-        if s["pred_tier_id"] >= s["gold_tier_id"]:
+        if trajectory_passed:
             pb["N_usd"] += rec["baseline_cost"] - rec["pred_cost"]
         else:
             pb["N_usd"] -= rec["pred_cost"]
+            pb["failed_retry_baseline_usd"] += rec["baseline_cost"]
+            if iid not in failed_traj_seen_by_bench[b]:
+                failed_traj_seen_by_bench[b].add(iid)
+                pb["failed_trajectory_count"] += 1
 
-    traj_status = _build_trajectory_status(rows)
-    # Map every instance_id to a benchmark (even trajectories made entirely of
-    # error rows, which produce no yields from ``_iter_trajectory_step_costs``).
-    if traj_status:
-        missing = set(traj_status.keys()) - set(traj_to_bench.keys())
-        if missing:
-            for r in rows:
-                iid = r.get("instance_id", r["id"])
-                if iid in missing and iid not in traj_to_bench:
-                    traj_to_bench[iid] = r["benchmark"]
-
+    # Count failed trajectories that consist entirely of error rows (no
+    # evaluable steps emitted from _iter_trajectory_step_costs).  Their
+    # contribution to D/N is zero, but we still want them visible in the
+    # failed_trajectory_count for reporting.
     for iid, st in traj_status.items():
         if not st["has_error"] and st["all_pass"]:
             continue
-        b = traj_to_bench.get(iid)
-        if b is None:
+        if any(iid in seen for seen in failed_traj_seen_by_bench.values()):
             continue
-        retry = traj_baseline_sum.get(iid, 0.0)
-        pb = per_bench[b]
-        pb["N_usd"] -= retry
-        pb["failed_trajectory_count"] += 1
-        pb["retry_penalty_usd"] += retry
+        bench: str | None = None
+        for r in rows:
+            riid = r.get("instance_id", r["id"])
+            if riid == iid:
+                bench = r["benchmark"]
+                break
+        if bench is None:
+            continue
+        failed_traj_seen_by_bench[bench].add(iid)
+        per_bench[bench]["failed_trajectory_count"] += 1
 
     return dict(per_bench)
 
@@ -559,31 +585,33 @@ def compute_v2_scores(rows: list[dict[str, Any]]) -> dict[str, Any]:
        no error).  Denominator is total rows (same as metric 1) so each
        evaluation step is weighted equally; trajectory-level all-or-nothing
        gating is still applied. Guarantees ``trajectory_pass ≤ case_pass``.
-    4. ``cost_savings_score_percent`` — full-cost savings ratio, aggregated
-       over **all rows (every gold tier, including gold=high)** with:
-         (a) Denominator: ``D_b += baseline_cost`` per evaluable step (total
-             always-high bill);
-         (b) Step-level pass/fail: ``pred>=gold`` adds ``baseline-pred_cost``;
-             ``pred<gold`` subtracts ``pred_cost``;
-         (c) Trajectory-level retry penalty: every failed trajectory (any
-             step has an error or ``pred<gold``) additionally subtracts
-             ``Σ baseline_cost`` over all its evaluable steps — one full
-             always-high re-run of the whole trajectory.  Single-step failed
-             trajectories incur 1× baseline; N-step failed trajectories incur
-             N× baseline.
+    4. ``cost_savings_score_percent`` — full-cost savings ratio under the
+       natural-accounting user-bill model, aggregated over **all rows (every
+       gold tier, including gold=high)**:
+         (a) Denominator: ``D_b += baseline_cost`` per evaluable step (the
+             "always-high" total bill);
+         (b) Trajectory-level pass/fail drives the numerator:
+               - passed trajectory (no error AND every step pred>=gold):
+                     ``N_b += baseline_cost - pred_cost`` per step;
+               - failed trajectory (any step has an error OR pred<gold):
+                     ``N_b -= pred_cost`` per step.
+             The failed-trajectory user bill is thereby modelled as
+             ``Σ pred_cost`` (router's wasted chain) + ``Σ baseline_cost``
+             (one full always-high re-run of every step in the chain);
+             savings relative to always-high reduce to exactly ``-Σ pred``.
        Across benchmarks the score is **macro-weighted by total row count**
        per benchmark (same denominator scope as metric 1).  Score lies in
-       ``(-∞, 100]``; stays in ``[0, 100]`` unless waste + retry exceed the
-       baseline total.
+       ``(-∞, 100]``; stays in ``[0, 100]`` whenever user bill stays below
+       the always-high bill.
     5. ``combined_score_percent`` — arithmetic mean of the four scores above.
 
-    Rationale for the cost_savings scope change: ``gold=high`` rows inherently
-    have no cost-savings headroom (baseline already equals gold), so including
-    them in D/N distorts the per-benchmark weighting (a ``gold=high``-dominated
-    benchmark can end up with D≈0 and thus ~zero global weight).  Excluding
-    them and macro-weighting by ``gold<high`` row count keeps the savings score
-    proportional to the share of the workload where routing choice actually
-    affects cost.
+    Rationale for the cost_savings scope (``D = Σ baseline`` over all rows):
+    ``gold=high`` rows inherently have no cost-savings headroom (baseline
+    already equals gold).  Using ``D = Σ (baseline - gold)`` (v1 accounting)
+    under-weights ``gold=high``-dominated benchmarks because their D collapses
+    to ~0.  Using ``D = Σ baseline`` keeps each benchmark's weight proportional
+    to its row count, and makes the score read as "what fraction of the
+    always-high total bill was actually saved".
     """
     total_rows = len(rows)
     error_rows = sum(1 for r in rows if "error" in r)
@@ -633,7 +661,13 @@ def compute_v2_scores(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for b, rowcount in per_bench_rowcount.items():
         raw = per_bench_raw.get(
             b,
-            {"D_usd": 0.0, "N_usd": 0.0, "step_count": 0, "failed_trajectory_count": 0, "retry_penalty_usd": 0.0},
+            {
+                "D_usd": 0.0,
+                "N_usd": 0.0,
+                "step_count": 0,
+                "failed_trajectory_count": 0,
+                "failed_retry_baseline_usd": 0.0,
+            },
         )
         d_b = raw["D_usd"]
         n_b = raw["N_usd"]
@@ -642,7 +676,7 @@ def compute_v2_scores(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "row_count": rowcount,
             "step_count": raw["step_count"],
             "failed_trajectory_count": raw["failed_trajectory_count"],
-            "retry_penalty_usd": raw["retry_penalty_usd"],
+            "failed_retry_baseline_usd": raw["failed_retry_baseline_usd"],
             "D_usd": d_b,
             "N_usd": n_b,
             "cost_savings_score_percent": cost_b,
@@ -692,14 +726,15 @@ def compute_v2_scores(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "note": (
             "cost_savings_score_percent is macro-averaged across benchmarks by each "
             "benchmark's total row count (same scope as case_pass_rate). All gold tiers "
-            "are included; gold=high contributes 0 to D naturally and may contribute a "
-            "negative N when pred<high (failed gold=high steps subtract pred_cost). "
-            "Per-step accumulation: pred>=gold adds baseline-pred_cost; pred<gold "
-            "subtracts pred_cost. Additionally, every failed trajectory (any step with "
-            "error or pred_tier_id<gold_tier_id) incurs an extra penalty N -= "
-            "Σ baseline_cost over its evaluable steps (one always-high retry). "
-            "trajectory_pass_rate_percent uses row-weighted denominator: a row counts "
-            "toward the numerator iff its entire trajectory passes."
+            "are included; D_b = Σ baseline_cost over every evaluable step. Numerator is "
+            "trajectory-level: passed trajectories (no error AND every step pred>=gold) "
+            "contribute N_b += baseline_cost - pred_cost per step; failed trajectories "
+            "contribute N_b -= pred_cost per step, which under D = Σ baseline encodes the "
+            "failed-trajectory user bill = Σ pred_cost + Σ baseline_cost (router's chain "
+            "wasted + one full always-high re-run of every step). No additional retry "
+            "penalty is applied on top. trajectory_pass_rate_percent uses row-weighted "
+            "denominator: a row counts toward the numerator iff its entire trajectory "
+            "passes."
         ),
     }
 

@@ -174,29 +174,28 @@ These metrics are computed by **`main.eval`**.
 | 1 | **`case_pass_rate_percent`** | total rows | `#{pred_tier_id >= gold_tier_id}` over all rows (rows with `error` count as failures). |
 | 2 | **`case_exact_match_percent`** | total rows | `#{pred_tier_id == gold_tier_id}` over all rows. |
 | 3 | **`trajectory_pass_rate_percent`** | total rows | A row counts toward the numerator iff its entire trajectory passes (every step `pred_tier_id >= gold_tier_id`, no `error`). Row-weighted denominator makes this directly comparable to metric 1 and guarantees **`trajectory_pass_rate ≤ case_pass_rate`**. |
-| 4 | **`cost_savings_score_percent`** | USD ratio | Full-cost savings with failure/retry penalty (see "Cost savings formula" below). Macro-weighted across benchmarks by total row count. Range `(−∞, 100]`, normally `[0, 100]`. |
+| 4 | **`cost_savings_score_percent`** | USD ratio | Full-cost savings under the **trajectory-level natural-accounting user-bill model** (failed trajectory = router's whole chain wasted + one full always-high re-run of the chain; see "Cost savings formula" below). Macro-weighted across benchmarks by total row count. Range `(−∞, 100]`, normally `[0, 100]`. |
 | 5 | **`combined_score_percent`** | — | Arithmetic mean of 1–4; NaN if any component is NaN. |
 
 #### Cost savings formula (metric 4)
 
-All gold tiers are included (gold=high rows contribute 0 to D naturally, and may contribute a negative N on failure). Per evaluable step of benchmark *b*, using the same full four-category cost model as `router_accounting` (`step_full_cost_usd`, see "Nominal pricing"):
+All gold tiers are included. The underlying physical model is a **trajectory-level natural-accounting user bill**:
+
+- **Passed trajectory** (no `error` AND every step `pred_tier_id >= gold_tier_id`): user bill = `Σ pred_cost`. Savings vs always-high = `Σ (baseline − pred)`.
+- **Failed trajectory** (any `error` OR any step `pred_tier_id < gold_tier_id`): the router's entire chain is wasted and the whole trajectory has to be re-run with always-high. User bill = `Σ pred_cost (router's full original chain) + Σ baseline_cost (one full-high retry of the whole chain)`. Savings vs always-high reduce to exactly `−Σ pred_cost`.
+
+Per evaluable step of benchmark *b*, using the same full four-category cost model as `router_accounting` (`step_full_cost_usd`, see "Nominal pricing"), accumulation is driven by **trajectory-level** pass/fail:
 
 ```
-D_b  += baseline_cost                              # baseline = always-high step bill
-if pred_tier_id >= gold_tier_id:
-    N_b += baseline_cost - pred_cost               # step-level: saved delta
-else:                                              # step-level fail
-    N_b -= pred_cost                               # cheap call wasted
+D_b  += baseline_cost                                  # baseline = always-high step bill
+if trajectory_passed:                                  # no error AND every step pred >= gold
+    N_b += baseline_cost - pred_cost                   # credit this step's savings
+else:                                                  # trajectory failed — no step gets credit
+    N_b -= pred_cost                                   # implicit: the Σ baseline full-high retry
+                                                       # is already covered by D = Σ baseline
 ```
 
-On top of the step-level accumulation, every **failed trajectory** (any step with `error` or `pred_tier_id < gold_tier_id`) incurs an **extra retry-at-baseline penalty** — one full always-high re-run of the whole trajectory:
-
-```
-for every failed trajectory t:
-    N_b -= Σ baseline_cost over t's evaluable steps
-# Single-step fail    => -1 × baseline
-# N-step trajectory fail => -N × baseline (every round billed at high)
-```
+Note: inside a failed trajectory, steps that individually pass (`pred >= gold`) are **not** credited with step-level savings — the whole chain has to be re-run, so individual step correctness doesn't rescue the trajectory. There is no additional `-Σ baseline` retry penalty on top: the one physical full-high retry is already captured by the denominator.
 
 Across benchmarks the score is macro-weighted by total row count (same scope as metric 1):
 
@@ -204,7 +203,7 @@ Across benchmarks the score is macro-weighted by total row count (same scope as 
 cost_savings_score_percent = Σ_b (rows_b / total_rows) × (100 × N_b / D_b)
 ```
 
-The `scores_v2.by_benchmark.<b>` block reports `row_count`, `step_count`, `failed_trajectory_count`, `retry_penalty_usd`, `D_usd`, `N_usd`, `cost_savings_score_percent`, and `weight_in_global_cost_savings` for each benchmark.
+The `scores_v2.by_benchmark.<b>` block reports `row_count`, `step_count`, `failed_trajectory_count`, `failed_retry_baseline_usd` (informational: Σ baseline over failed-trajectory evaluable steps), `D_usd`, `N_usd`, `cost_savings_score_percent`, and `weight_in_global_cost_savings` for each benchmark.
 
 ### Legacy per-row / per-step fields (`section_11`)
 
@@ -246,7 +245,7 @@ If the `tokenizers` package is not installed, all tiers fall back to `tiktoken` 
 
 ### Legacy trajectory-level fields (`router_accounting`)
 
-Still emitted in the eval summary for backward compatibility. Superseded by **`scores_v2`** (which keeps trajectory-level pass/fail but uses a different D definition and adds an explicit retry penalty).
+Still emitted in the eval summary for backward compatibility. Superseded by **`scores_v2`** (which keeps trajectory-level pass/fail but switches to `D = Σ baseline` and uses a trajectory-level natural-accounting numerator where a failed trajectory loses all step-level savings credit — an implicit one-time full-high retry of the whole chain, no additional penalty coefficient).
 
 Computed in **`compute_router_accounting_metrics`** (`main.eval.section11`). Steps with **`error`** are excluded from **`evaluable_step_count`** and from **`D_usd`** / **`N_usd`** (they never enter the per-step cost loop). Any trajectory that contains **`error`** on at least one step is **failed** for **`pass_rate_percent`** and **`exact_match_rate_percent`** (those steps still set `has_error` and clear trajectory pass/exact flags).
 

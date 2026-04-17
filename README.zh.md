@@ -182,29 +182,27 @@ print(summary["scores_v2"])
 | 1 | **`case_pass_rate_percent`** | 全部行 | `#{pred_tier_id >= gold_tier_id}` / 全部行数（`error` 行按失败计）。 |
 | 2 | **`case_exact_match_percent`** | 全部行 | `#{pred_tier_id == gold_tier_id}` / 全部行数。 |
 | 3 | **`trajectory_pass_rate_percent`** | 全部行 | 某行计入分子当且仅当它**所在整条轨迹**每步都 `pred_tier_id >= gold_tier_id` 且无 `error`。分母按行，与 metric 1 同口径，**数学上保证 `trajectory_pass_rate ≤ case_pass_rate`**。 |
-| 4 | **`cost_savings_score_percent`** | USD 比值 | full-cost 口径的省钱率，含失败重试惩罚（见下文"成本节省公式"）；按 benchmark 总行数做宏观加权。范围 `(−∞, 100]`，正常落在 `[0, 100]`。 |
+| 4 | **`cost_savings_score_percent`** | USD 比值 | full-cost 口径的省钱率，采用**轨迹级自然账单**（失败轨迹 = 整条链路 router 白烧 + 整条链路 high 重跑一次，见下文"成本节省公式"）；按 benchmark 总行数做宏观加权。范围 `(−∞, 100]`，正常落在 `[0, 100]`。 |
 | 5 | **`combined_score_percent`** | — | 1–4 的算术平均；任一为 NaN 则整体为 NaN。 |
 
 #### 成本节省公式（metric 4）
 
-**包含所有金标档位**（`gold=high` 行在 D 上自然贡献 0，失败时仍对 N 做惩罚）。每个可评步使用与 `router_accounting` 相同的 full-cost 四段模型（`step_full_cost_usd`，见「名义定价」）：
+**包含所有金标档位**（`gold=high` 行在 D 上自然贡献 baseline 总额；失败时整条轨迹都按 `-pred_cost` 累加）。物理模型是 **轨迹级自然账单**：
+
+- **通过的轨迹**（无 `error` 且每一步 `pred_tier_id >= gold_tier_id`）：用户账单 = `Σ pred_cost`，节省 = `Σ (baseline − pred)`。
+- **失败的轨迹**（任一步 `error` 或 `pred_tier_id < gold_tier_id`）：整条链路的路由规划作废；用户账单 = `Σ pred_cost (router 原本规划的整条链路) + Σ baseline_cost (整条链路用 high 重跑一次)`。相对始终 high 的节省刚好 = `−Σ pred_cost`。
+
+每个可评步使用与 `router_accounting` 相同的 full-cost 四段模型（`step_full_cost_usd`，见「名义定价」），按**轨迹级** pass/fail 累加：
 
 ```
-D_b  += baseline_cost                              # baseline = 始终 high 的单步账单
-if pred_tier_id >= gold_tier_id:
-    N_b += baseline_cost - pred_cost               # step-level：省下的差额
-else:                                              # step-level 失败
-    N_b -= pred_cost                               # 低档调用白花的钱
+D_b  += baseline_cost                                         # 始终 high 的单步账单
+if trajectory_passed:                                          # 无 error 且每步 pred >= gold
+    N_b += baseline_cost - pred_cost                           # 该步的节省信用
+else:                                                          # 轨迹失败 —— 整条链路每步都不给信用
+    N_b -= pred_cost                                           # 隐含：Σ baseline 的 high 重跑由 D 覆盖
 ```
 
-在 step-level 累积之外，**每一条失败轨迹**（任一步 `error` 或 `pred_tier_id < gold_tier_id`）额外扣一次**整条轨迹按 high 重跑**的代价：
-
-```
-for every failed trajectory t:
-    N_b -= Σ baseline_cost over t's evaluable steps
-# 单步失败    => -1 × baseline
-# N 步轨迹失败 => -N × baseline（每一轮均按 high 计）
-```
+关键设计：**失败轨迹里侥幸通过的 step 不再计入节省信用**——因为整条链路都要用 high 重跑，步级的"对了"对整条轨迹没有挽救意义。也因此**不需要额外再扣一次 `Σ baseline`**（惩罚系数 2）：物理上只有一次 full-high 重跑，这次重跑已由分母 `D = Σ baseline` 覆盖。
 
 跨 benchmark 按**总行数**宏观加权（与 metric 1 同口径）：
 
@@ -212,7 +210,7 @@ for every failed trajectory t:
 cost_savings_score_percent = Σ_b (rows_b / total_rows) × (100 × N_b / D_b)
 ```
 
-`scores_v2.by_benchmark.<b>` 块提供每个 benchmark 的 `row_count`、`step_count`、`failed_trajectory_count`、`retry_penalty_usd`、`D_usd`、`N_usd`、`cost_savings_score_percent`、`weight_in_global_cost_savings`。
+`scores_v2.by_benchmark.<b>` 块提供每个 benchmark 的 `row_count`、`step_count`、`failed_trajectory_count`、`failed_retry_baseline_usd`（失败轨迹的 Σ baseline，仅信息性字段）、`D_usd`、`N_usd`、`cost_savings_score_percent`、`weight_in_global_cost_savings`。
 
 ### 旧版按行 / 按步字段（`section_11`）
 
@@ -254,7 +252,7 @@ cost_savings_score_percent = Σ_b (rows_b / total_rows) × (100 × N_b / D_b)
 
 ### 旧版轨迹级字段（`router_accounting`）
 
-仍保留在 eval summary 以兼容旧消费方；**已被 `scores_v2` 取代**（v2 同样保留轨迹级 pass/fail，但改用 `D = Σ baseline`，并显式加入失败重试惩罚）。
+仍保留在 eval summary 以兼容旧消费方；**已被 `scores_v2` 取代**（v2 同样保留轨迹级 pass/fail，但改用 `D = Σ baseline`，并以"失败轨迹 = 整条链路 full-high 重跑"的自然账单口径累加 N，取代 v1 的 step 级 + retry 惩罚公式）。
 
 由 **`compute_router_accounting_metrics`**（`main.eval.section11`）计算。含 **`error`** 的步不计入 **`evaluable_step_count`**，也不进入 **`D_usd` / `N_usd`** 的逐步累加；但只要 trajectory 中**任一步**含 **`error`**，该 trajectory 在 **`pass_rate_percent`** 与 **`exact_match_rate_percent`** 上均计为**未通过**。
 
